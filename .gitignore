@@ -1,0 +1,38 @@
+# Data and output directories
+fantasy_2026/data/
+fantasy_2026/simulation_reports/
+fantasy_2026/fixed_simulations/
+fantasy_2026/projection_diagnostics/__pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Config with credentials
+fantasy_2026/config/league_config.yaml
