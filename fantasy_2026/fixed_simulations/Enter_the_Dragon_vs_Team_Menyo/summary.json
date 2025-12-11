@@ -1,0 +1,17 @@
+{
+  "matchup": "Enter the Dragon vs Team Menyo",
+  "team_a_name": "Enter the Dragon",
+  "team_b_name": "Team Menyo",
+  "n_simulations": 500,
+  "team_a_wins": 223,
+  "team_b_wins": 212,
+  "ties": 65,
+  "team_a_win_pct": 0.446,
+  "team_b_win_pct": 0.424,
+  "team_a_avg_cats_won": 5.064,
+  "team_b_avg_cats_won": 4.422,
+  "team_a_players": 5,
+  "team_b_players": 3,
+  "team_a_total_games": 6,
+  "team_b_total_games": 5
+}

@@ -1,0 +1,17 @@
+{
+  "matchup": "Jay Stat vs Team perez",
+  "team_a_name": "Jay Stat",
+  "team_b_name": "Team perez",
+  "n_simulations": 500,
+  "team_a_wins": 478,
+  "team_b_wins": 10,
+  "ties": 12,
+  "team_a_win_pct": 0.956,
+  "team_b_win_pct": 0.02,
+  "team_a_avg_cats_won": 7.42,
+  "team_b_avg_cats_won": 2.678,
+  "team_a_players": 4,
+  "team_b_players": 3,
+  "team_a_total_games": 5,
+  "team_b_total_games": 4
+}

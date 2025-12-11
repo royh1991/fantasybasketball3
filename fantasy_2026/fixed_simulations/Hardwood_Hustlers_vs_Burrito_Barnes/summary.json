@@ -1,0 +1,17 @@
+{
+  "matchup": "Hardwood Hustlers vs Burrito Barnes",
+  "team_a_name": "Hardwood Hustlers",
+  "team_b_name": "Burrito Barnes",
+  "n_simulations": 500,
+  "team_a_wins": 218,
+  "team_b_wins": 266,
+  "ties": 16,
+  "team_a_win_pct": 0.436,
+  "team_b_win_pct": 0.532,
+  "team_a_avg_cats_won": 5.308,
+  "team_b_avg_cats_won": 5.582,
+  "team_a_players": 11,
+  "team_b_players": 12,
+  "team_a_total_games": 39,
+  "team_b_total_games": 41
+}

@@ -1,0 +1,17 @@
+{
+  "matchup": "LF da broccoli vs KL2 LLC",
+  "team_a_name": "LF da broccoli",
+  "team_b_name": "KL2 LLC",
+  "n_simulations": 500,
+  "team_a_wins": 186,
+  "team_b_wins": 293,
+  "ties": 21,
+  "team_a_win_pct": 0.372,
+  "team_b_win_pct": 0.586,
+  "team_a_avg_cats_won": 4.9,
+  "team_b_avg_cats_won": 5.824,
+  "team_a_players": 12,
+  "team_b_players": 13,
+  "team_a_total_games": 42,
+  "team_b_total_games": 46
+}

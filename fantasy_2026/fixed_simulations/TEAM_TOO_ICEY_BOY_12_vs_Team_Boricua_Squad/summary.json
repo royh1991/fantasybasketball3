@@ -1,0 +1,17 @@
+{
+  "matchup": "TEAM TOO ICEY BOY 12 vs Team Boricua Squad",
+  "team_a_name": "TEAM TOO ICEY BOY 12",
+  "team_b_name": "Team Boricua Squad",
+  "n_simulations": 500,
+  "team_a_wins": 204,
+  "team_b_wins": 269,
+  "ties": 27,
+  "team_a_win_pct": 0.408,
+  "team_b_win_pct": 0.538,
+  "team_a_avg_cats_won": 5.236,
+  "team_b_avg_cats_won": 5.564,
+  "team_a_players": 12,
+  "team_b_players": 12,
+  "team_a_total_games": 38,
+  "team_b_total_games": 40
+}
