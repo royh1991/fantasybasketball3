@@ -316,3 +316,70 @@ python scripts/3_get_matchups.py --week X
 - `*_latest.csv` - Most recent version, updated by scripts
 - `box_scores_week{N}_{timestamp}.csv` - Week-specific snapshots
 - `week{N}_report_{timestamp}/` - Timestamped reports (never overwritten)
+
+---
+
+## Data Lifecycle Reference
+
+### Script → File Mapping
+
+**Script 1: `scripts/1_extract_rosters.py`**
+- CREATES: `data/roster_snapshots/roster_latest.csv`
+- REQUIRES: ESPN_S2, ESPN_SWID env vars
+- COLUMNS: team_name, player_name, player_id_espn, position, pro_team, injury_status
+- PURPOSE: Master list of all rostered players across 14 fantasy teams
+
+**Script 2: `scripts/2_collect_historical_data.py`**
+- CREATES: `data/historical_gamelogs/historical_gamelogs_latest.csv`
+- REQUIRES: `roster_latest.csv` (reads player list from it)
+- COLUMNS: PLAYER_NAME, PLAYER_ID, GAME_DATE, MIN, FGM, FGA, FG3M, FG3A, FTM, FTA, REB, AST, STL, BLK, TOV, PTS
+- PURPOSE: NBA game logs (2021-2025) used as training data for Bayesian models
+
+**Script 3: `scripts/3_get_matchups.py`**
+- CREATES: `data/matchups/matchups_latest.csv`, `data/matchups/box_scores_latest.csv`
+- REQUIRES: ESPN_S2, ESPN_SWID env vars
+- matchups COLUMNS: week, home_team_id, home_team_name, away_team_id, away_team_name
+- box_scores COLUMNS: week, matchup, team_name, team_side, player_name, games_played, stat_0 (dict)
+- PURPOSE: Weekly fantasy matchups and actual player stats for that week
+
+**Script 4: `scripts/4_create_player_mapping.py`**
+- CREATES: `data/mappings/player_mapping_latest.csv`
+- REQUIRES: `roster_latest.csv` + `historical_gamelogs_latest.csv`
+- COLUMNS: espn_name, nba_api_name, match_score, source
+- PURPOSE: Maps ESPN player names to NBA API names (handles "P.J. Washington" vs "PJ Washington")
+
+**Script 5: `scripts/5_daily_roster_history.py`**
+- CREATES: `data/ownership_history/daily_rosters_latest.csv`
+- REQUIRES: ESPN_S2, ESPN_SWID env vars (fetches transactions)
+- COLUMNS: date, team_id, team_name, player_name
+- PURPOSE: Historical record of which team owned which player on each date
+
+### Dependency Order
+
+RUN SCRIPTS IN THIS ORDER: 1 → 2 → 4 → 3 → simulate
+- Script 2 needs Script 1 output (player list)
+- Script 4 needs Scripts 1+2 outputs (names from both sources)
+- Script 3 can run independently but simulation needs all files
+- Script 5 is independent (not needed for simulation)
+
+### File Usage in Simulation
+
+`simulate_with_correct_data.py` reads:
+1. `box_scores_latest.csv` → determines games_played per player for the week
+2. `historical_gamelogs_latest.csv` → training data for Bayesian model fitting
+3. `player_mapping_latest.csv` → translates ESPN names to find NBA historical data
+
+### When to Refresh Data
+
+- `roster_latest.csv`: After trades/waiver moves
+- `historical_gamelogs_latest.csv`: Weekly (new NBA games)
+- `box_scores_latest.csv`: Before each simulation run
+- `player_mapping_latest.csv`: When new players are added to rosters
+- `daily_rosters_latest.csv`: Optional, for ownership tracking
+
+### Common Data Issues
+
+IF "Player not found in models" → check player_mapping_latest.csv for missing entry, re-run script 4
+IF historical data outdated → re-run script 2
+IF box scores empty → run `python scripts/3_get_matchups.py --week N`
+IF simulation uses wrong week → check box_scores_latest.csv week column

@@ -692,6 +692,296 @@ def create_validation_visualizations(all_results: Dict, output_dir: Path):
     return df, category_df
 
 
+def create_538_calibration_plot(cat_df: pd.DataFrame, output_dir: Path):
+    """
+    Create 538-style calibration plot for category predictions.
+
+    For each category prediction, we have a predicted probability and an outcome.
+    We bin predictions by probability and compare actual win rates to predicted.
+    Perfect calibration = points on the diagonal.
+    """
+    from scipy import stats
+
+    # Filter out ties
+    df = cat_df[cat_df['correct'].notna()].copy()
+
+    if len(df) == 0:
+        print("  ⚠️  No data for calibration plot")
+        return
+
+    # Convert prediction to "confidence in predicted winner" format
+    # pred_home_win_pct is probability home team wins
+    # We want probability that our predicted winner actually wins
+    # If pred_home_win_pct > 0.5, we predict home, confidence = pred_home_win_pct
+    # If pred_home_win_pct < 0.5, we predict away, confidence = 1 - pred_home_win_pct
+    df['pred_prob'] = df['pred_home_win_pct'].apply(
+        lambda x: x if x >= 0.5 else 1 - x
+    )
+
+    # Binary outcome: did our predicted winner actually win?
+    df['outcome'] = df['correct'].astype(int)
+
+    # Create figure with 2 plots: aggregate and by-category
+    fig, axes = plt.subplots(1, 2, figsize=(20, 9))
+
+    # ==================== PLOT 1: AGGREGATE CALIBRATION ====================
+    ax = axes[0]
+
+    # Bin into 5% increments from 50% to 100%
+    bins = np.arange(0.50, 1.01, 0.05)
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+
+    # Calculate stats for each bin
+    bin_data = []
+    for i in range(len(bins) - 1):
+        mask = (df['pred_prob'] >= bins[i]) & (df['pred_prob'] < bins[i+1])
+        n = mask.sum()
+        if n > 0:
+            actual_rate = df.loc[mask, 'outcome'].mean()
+            # Wilson score interval for 95% CI
+            if n > 1:
+                ci_low, ci_high = _wilson_ci(df.loc[mask, 'outcome'].sum(), n, 0.95)
+            else:
+                ci_low, ci_high = 0, 1
+            bin_data.append({
+                'bin_center': bin_centers[i],
+                'n': n,
+                'actual_rate': actual_rate,
+                'ci_low': ci_low,
+                'ci_high': ci_high
+            })
+
+    bin_df = pd.DataFrame(bin_data)
+
+    # Plot diagonal (perfect calibration)
+    ax.plot([0.5, 1.0], [0.5, 1.0], 'k-', linewidth=2, label='Perfect calibration', zorder=1)
+
+    # Fill area between diagonal
+    ax.fill_between([0.5, 1.0], [0.5, 1.0], [0.5, 0.5], alpha=0.1, color='green', label='Underconfident')
+    ax.fill_between([0.5, 1.0], [1.0, 1.0], [0.5, 1.0], alpha=0.1, color='red', label='Overconfident')
+
+    # Plot confidence intervals
+    for _, row in bin_df.iterrows():
+        ax.plot([row['bin_center'], row['bin_center']],
+                [row['ci_low'], row['ci_high']],
+                color='#555555', linewidth=1.5, zorder=2)
+
+    # Plot points with size proportional to sample size
+    sizes = bin_df['n'] * 3  # Scale factor for visibility
+    sizes = sizes.clip(lower=50, upper=500)  # Min/max size
+
+    scatter = ax.scatter(bin_df['bin_center'], bin_df['actual_rate'],
+                         s=sizes, c='#3498db', alpha=0.8, edgecolors='black',
+                         linewidth=1.5, zorder=3)
+
+    # Add annotations for each point
+    for _, row in bin_df.iterrows():
+        # Position label above or below point
+        offset = 0.03 if row['actual_rate'] < row['bin_center'] else -0.04
+        ax.annotate(f"n={int(row['n'])}\n{row['actual_rate']*100:.0f}%",
+                    (row['bin_center'], row['actual_rate'] + offset),
+                    ha='center', va='bottom' if offset > 0 else 'top',
+                    fontsize=8, fontweight='bold')
+
+    ax.set_xlabel('Predicted Win Probability', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Actual Win Rate', fontsize=12, fontweight='bold')
+    ax.set_title('538-Style Calibration: Category Predictions\n(All Categories Aggregated)',
+                 fontsize=14, fontweight='bold')
+    ax.set_xlim(0.48, 1.02)
+    ax.set_ylim(0.48, 1.02)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='lower right', fontsize=10)
+
+    # Add overall stats text
+    overall_acc = df['outcome'].mean() * 100
+    n_total = len(df)
+    brier_score = ((df['pred_prob'] - df['outcome'])**2).mean()
+
+    stats_text = f"Total Predictions: {n_total}\nOverall Accuracy: {overall_acc:.1f}%\nBrier Score: {brier_score:.4f}"
+    ax.text(0.52, 0.95, stats_text, transform=ax.transAxes, fontsize=10,
+            verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    # ==================== PLOT 2: BY-CATEGORY CALIBRATION ====================
+    ax2 = axes[1]
+
+    # Calculate calibration error for each category
+    cat_calibration = []
+
+    # High variance categories (harder to predict)
+    high_var_cats = ['TO', 'STL', 'BLK', '3P%']
+
+    for cat in CATEGORIES:
+        cat_data = df[df['category'] == cat]
+        if len(cat_data) > 5:
+            # Mean predicted prob vs mean actual outcome
+            mean_pred = cat_data['pred_prob'].mean()
+            mean_actual = cat_data['outcome'].mean()
+            calibration_error = mean_actual - mean_pred  # Positive = underconfident
+            n = len(cat_data)
+            accuracy = cat_data['outcome'].mean() * 100
+
+            cat_calibration.append({
+                'category': cat,
+                'mean_pred': mean_pred,
+                'mean_actual': mean_actual,
+                'calibration_error': calibration_error,
+                'n': n,
+                'accuracy': accuracy,
+                'high_variance': cat in high_var_cats
+            })
+
+    cal_df = pd.DataFrame(cat_calibration)
+
+    # Sort by calibration error
+    cal_df = cal_df.sort_values('calibration_error')
+
+    # Plot horizontal bar chart of calibration error
+    colors = ['#e74c3c' if x < -0.05 else '#2ecc71' if x > 0.05 else '#f39c12'
+              for x in cal_df['calibration_error']]
+
+    y_pos = range(len(cal_df))
+    bars = ax2.barh(y_pos, cal_df['calibration_error'] * 100, color=colors,
+                    edgecolor='black', alpha=0.8)
+
+    ax2.axvline(x=0, color='black', linewidth=2)
+    ax2.axvline(x=-5, color='red', linewidth=1, linestyle='--', alpha=0.5)
+    ax2.axvline(x=5, color='green', linewidth=1, linestyle='--', alpha=0.5)
+
+    # Labels
+    labels = [f"{row['category']} ({row['accuracy']:.0f}%)" for _, row in cal_df.iterrows()]
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels(labels, fontsize=10)
+
+    # Mark high-variance categories
+    for i, (_, row) in enumerate(cal_df.iterrows()):
+        if row['high_variance']:
+            ax2.annotate('⚡', (cal_df['calibration_error'].max() * 100 + 2, i),
+                        fontsize=12, va='center')
+
+    ax2.set_xlabel('Calibration Error (Actual - Predicted) %', fontsize=12, fontweight='bold')
+    ax2.set_title('Calibration by Category\n(⚡ = High Variance Categories)',
+                  fontsize=14, fontweight='bold')
+    ax2.set_xlim(-25, 25)
+    ax2.grid(True, axis='x', alpha=0.3)
+
+    # Add legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#e74c3c', label='Overconfident (actual < predicted)'),
+        Patch(facecolor='#f39c12', label='Well calibrated (±5%)'),
+        Patch(facecolor='#2ecc71', label='Underconfident (actual > predicted)')
+    ]
+    ax2.legend(handles=legend_elements, loc='lower right', fontsize=9)
+
+    plt.suptitle('FiveThirtyEight-Style Category Prediction Calibration Analysis',
+                 fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(output_dir / 'calibration_538_style.png', dpi=300, bbox_inches='tight')
+    print(f"  Saved: calibration_538_style.png")
+    plt.close()
+
+    # Save binned calibration data
+    bin_df.to_csv(output_dir / 'calibration_bins_aggregate.csv', index=False)
+    print(f"  Saved: calibration_bins_aggregate.csv ({len(bin_df)} bins)")
+
+    # Save per-category calibration data
+    cal_df.to_csv(output_dir / 'calibration_by_category.csv', index=False)
+    print(f"  Saved: calibration_by_category.csv ({len(cal_df)} categories)")
+
+    # ==================== PLOT 3: DETAILED BY-CATEGORY CALIBRATION ====================
+    # Create a grid of mini calibration plots for each category
+    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
+    axes = axes.flatten()
+
+    for idx, cat in enumerate(CATEGORIES):
+        ax = axes[idx]
+        cat_data = df[df['category'] == cat]
+
+        if len(cat_data) < 5:
+            ax.text(0.5, 0.5, f'{cat}\nInsufficient data', ha='center', va='center',
+                   transform=ax.transAxes, fontsize=12)
+            ax.set_xlim(0.5, 1)
+            ax.set_ylim(0.5, 1)
+            continue
+
+        # Bin this category's data
+        cat_bin_data = []
+        for i in range(len(bins) - 1):
+            mask = (cat_data['pred_prob'] >= bins[i]) & (cat_data['pred_prob'] < bins[i+1])
+            n = mask.sum()
+            if n >= 2:  # Need at least 2 observations
+                actual_rate = cat_data.loc[mask, 'outcome'].mean()
+                cat_bin_data.append({
+                    'bin_center': bin_centers[i],
+                    'n': n,
+                    'actual_rate': actual_rate
+                })
+
+        if not cat_bin_data:
+            ax.text(0.5, 0.5, f'{cat}\nNo binned data', ha='center', va='center',
+                   transform=ax.transAxes, fontsize=12)
+            continue
+
+        cat_bin_df = pd.DataFrame(cat_bin_data)
+
+        # Plot diagonal
+        ax.plot([0.5, 1.0], [0.5, 1.0], 'k-', linewidth=1.5, alpha=0.5)
+
+        # Plot points
+        sizes = cat_bin_df['n'] * 8
+        sizes = sizes.clip(lower=30, upper=300)
+
+        color = '#e74c3c' if cat in high_var_cats else '#3498db'
+        ax.scatter(cat_bin_df['bin_center'], cat_bin_df['actual_rate'],
+                  s=sizes, c=color, alpha=0.7, edgecolors='black')
+
+        # Stats
+        accuracy = cat_data['outcome'].mean() * 100
+        n_total = len(cat_data)
+
+        ax.set_title(f'{cat}\nAcc: {accuracy:.0f}%, n={n_total}', fontsize=11, fontweight='bold')
+        ax.set_xlim(0.45, 1.05)
+        ax.set_ylim(0.45, 1.05)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+
+        if idx >= 8:  # Bottom row
+            ax.set_xlabel('Predicted', fontsize=9)
+        if idx % 4 == 0:  # Left column
+            ax.set_ylabel('Actual', fontsize=9)
+
+    # Hide unused subplot
+    axes[11].set_visible(False)
+
+    plt.suptitle('Calibration by Individual Category\n(Red = High Variance Categories: TO, STL, BLK, 3P%)',
+                 fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(output_dir / 'calibration_by_category.png', dpi=300, bbox_inches='tight')
+    print(f"  Saved: calibration_by_category.png")
+    plt.close()
+
+    return cal_df
+
+
+def _wilson_ci(successes: int, n: int, confidence: float = 0.95) -> tuple:
+    """Calculate Wilson score confidence interval for a proportion."""
+    from scipy import stats
+
+    if n == 0:
+        return 0, 1
+
+    p = successes / n
+    z = stats.norm.ppf(1 - (1 - confidence) / 2)
+
+    denominator = 1 + z**2 / n
+    center = (p + z**2 / (2*n)) / denominator
+    margin = z * np.sqrt((p * (1-p) + z**2 / (4*n)) / n) / denominator
+
+    return max(0, center - margin), min(1, center + margin)
+
+
 def create_category_calibration_visualization(all_results: Dict, output_dir: Path) -> pd.DataFrame:
     """Create category-level calibration analysis and visualization."""
 
@@ -710,12 +1000,19 @@ def create_category_calibration_visualization(all_results: Dict, output_dir: Pat
 
     cat_df = pd.DataFrame(all_cat_comparisons)
 
+    # Save raw category predictions data
+    cat_df.to_csv(output_dir / 'raw_category_predictions.csv', index=False)
+    print(f"  Saved: raw_category_predictions.csv ({len(cat_df)} predictions)")
+
     # Filter out ties for accuracy calculations
     cat_df_no_ties = cat_df[cat_df['correct'].notna()].copy()
 
     if len(cat_df_no_ties) == 0:
         print("  ⚠️  No non-tie category comparisons")
         return cat_df
+
+    # Create the 538-style calibration plot
+    create_538_calibration_plot(cat_df, output_dir)
 
     # Figure 3: Category-level dashboard (3x2 layout)
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
@@ -889,31 +1186,71 @@ def generate_markdown_report(all_results: Dict, df: pd.DataFrame, output_dir: Pa
     report.append(f"**Generated:** {timestamp}\n\n")
     report.append("---\n\n")
 
-    # Executive Summary
-    report.append("## Executive Summary\n\n")
+    # Calculate category-level stats first (PRIMARY METRIC)
+    n_weeks = df['week'].nunique()
+    n_matchups_per_week = len(df) // n_weeks if n_weeks > 0 else 0
 
+    cat_overall_acc = 0
+    total_cat_pred = 0
+    total_cat_correct = 0
+    cat_df_no_ties = None
+
+    if category_df is not None and len(category_df) > 0:
+        cat_df_no_ties = category_df[category_df['correct'].notna()].copy()
+        if len(cat_df_no_ties) > 0:
+            total_cat_pred = len(cat_df_no_ties)
+            total_cat_correct = cat_df_no_ties['correct'].sum()
+            cat_overall_acc = total_cat_correct / total_cat_pred * 100
+
+    # Executive Summary - CATEGORY ACCURACY AS PRIMARY METRIC
+    report.append("## Executive Summary\n\n")
+    report.append("**Primary Metric: Category-Level Accuracy**\n\n")
+    report.append(f"Total predictions = {n_weeks} weeks × {n_matchups_per_week} matchups × 11 categories\n\n")
+
+    report.append(f"| Metric | Value |\n")
+    report.append(f"|--------|-------|\n")
+    report.append(f"| **Total Category Predictions** | {total_cat_pred} |\n")
+    report.append(f"| **Correct Category Predictions** | {int(total_cat_correct)} |\n")
+    report.append(f"| **CATEGORY ACCURACY** | **{cat_overall_acc:.1f}%** |\n")
+    report.append(f"| **Weeks Analyzed** | {n_weeks} |\n")
+    report.append(f"| **Matchups per Week** | {n_matchups_per_week} |\n")
+
+    # Assess category performance
+    if cat_overall_acc >= 70:
+        cat_assessment = "🟢 **EXCELLENT** - Model significantly outperforms random chance"
+    elif cat_overall_acc >= 60:
+        cat_assessment = "🟡 **GOOD** - Model shows meaningful predictive power"
+    elif cat_overall_acc >= 50:
+        cat_assessment = "🟠 **MARGINAL** - Model slightly better than random"
+    else:
+        cat_assessment = "🔴 **POOR** - Model underperforms random chance"
+
+    report.append(f"| **Category Assessment** | {cat_assessment} |\n")
+    report.append("\n")
+
+    # Secondary: Matchup-level accuracy
     total_matchups = len(df)
     total_correct = df['correct'].sum()
     overall_accuracy = total_correct / total_matchups * 100 if total_matchups > 0 else 0
 
+    report.append("**Secondary Metric: Matchup-Level Accuracy**\n\n")
     report.append(f"| Metric | Value |\n")
     report.append(f"|--------|-------|\n")
-    report.append(f"| **Total Matchups Analyzed** | {total_matchups} |\n")
+    report.append(f"| **Total Matchups** | {total_matchups} |\n")
     report.append(f"| **Correct Predictions** | {total_correct} |\n")
-    report.append(f"| **Overall Accuracy** | **{overall_accuracy:.1f}%** |\n")
-    report.append(f"| **Weeks Analyzed** | {df['week'].nunique()} |\n")
+    report.append(f"| **Matchup Accuracy** | {overall_accuracy:.1f}% |\n")
 
-    # Assess performance
+    # Assess matchup performance
     if overall_accuracy >= 70:
-        assessment = "🟢 **EXCELLENT** - Model significantly outperforms random chance"
+        assessment = "🟢 EXCELLENT"
     elif overall_accuracy >= 60:
-        assessment = "🟡 **GOOD** - Model shows meaningful predictive power"
+        assessment = "🟡 GOOD"
     elif overall_accuracy >= 50:
-        assessment = "🟠 **MARGINAL** - Model slightly better than random"
+        assessment = "🟠 MARGINAL"
     else:
-        assessment = "🔴 **POOR** - Model underperforms random chance"
+        assessment = "🔴 POOR"
 
-    report.append(f"| **Assessment** | {assessment} |\n")
+    report.append(f"| **Matchup Assessment** | {assessment} |\n")
     report.append("\n")
 
     # Add within std analysis
@@ -925,24 +1262,103 @@ def generate_markdown_report(all_results: Dict, df: pd.DataFrame, output_dir: Pa
 
     report.append("\n---\n\n")
 
-    # Validation Dashboard
-    report.append("## Validation Dashboard\n\n")
+    # CATEGORY-LEVEL ANALYSIS FIRST (PRIMARY)
+    report.append("## Category-Level Analysis (Primary)\n\n")
+    report.append("This is the primary accuracy metric: how well we predict each of the 11 categories ")
+    report.append("across all matchups and weeks.\n\n")
+
+    # 538-style calibration plot
+    report.append("### 538-Style Calibration Analysis\n\n")
+    report.append("This plot shows calibration in the style of FiveThirtyEight's forecast analysis. ")
+    report.append("Points on the diagonal = perfect calibration. Points below = overconfident. Points above = underconfident.\n\n")
+    report.append("![538 Calibration](calibration_538_style.png)\n\n")
+    report.append("![Calibration by Category](calibration_by_category.png)\n\n")
+    report.append("**Key Observations:**\n")
+    report.append("- High variance categories (TO, STL, BLK, 3P%) are harder to predict\n")
+    report.append("- Circle size = sample size (larger = more predictions in that bin)\n")
+    report.append("- Vertical lines = 95% confidence intervals\n")
+    report.append("- Brier Score measures overall calibration (lower = better, 0 = perfect)\n\n")
+
+    report.append("### Category Accuracy Overview\n\n")
+    report.append("![Category Calibration](category_calibration.png)\n\n")
+
+    if cat_df_no_ties is not None and len(cat_df_no_ties) > 0:
+        # Per-category accuracy table
+        report.append("### Accuracy by Category\n\n")
+        report.append("| Category | Correct | Total | Accuracy | Assessment |\n")
+        report.append("|----------|---------|-------|----------|------------|\n")
+
+        cat_accuracy = cat_df_no_ties.groupby('category')['correct'].agg(['sum', 'count', 'mean'])
+        cat_accuracy['mean'] *= 100
+
+        for cat in CATEGORIES:
+            if cat in cat_accuracy.index:
+                row = cat_accuracy.loc[cat]
+                acc = row['mean']
+                if acc >= 60:
+                    assessment = "✅ Good"
+                elif acc >= 50:
+                    assessment = "⚠️ Fair"
+                else:
+                    assessment = "❌ Poor"
+                report.append(f"| {cat} | {int(row['sum'])} | {int(row['count'])} | {acc:.1f}% | {assessment} |\n")
+
+        report.append("\n")
+
+        # Category accuracy by week
+        report.append("### Category Accuracy by Week\n\n")
+        report.append("| Week | Category Predictions | Correct | Accuracy |\n")
+        report.append("|------|---------------------|---------|----------|\n")
+
+        week_cat_accuracy = cat_df_no_ties.groupby('week')['correct'].agg(['sum', 'count', 'mean'])
+        week_cat_accuracy['mean'] *= 100
+
+        for week in sorted(week_cat_accuracy.index):
+            row = week_cat_accuracy.loc[week]
+            acc_emoji = "✅" if row['mean'] >= 60 else "⚠️" if row['mean'] >= 50 else "❌"
+            report.append(f"| Week {week} | {int(row['count'])} | {int(row['sum'])} | {acc_emoji} {row['mean']:.1f}% |\n")
+
+        report.append("\n")
+
+        # Category calibration table
+        report.append("### Category Calibration by Confidence\n\n")
+        report.append("| Confidence | Expected | Actual | Count | Calibration |\n")
+        report.append("|------------|----------|--------|-------|-------------|\n")
+
+        bins = [(0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0)]
+        bin_labels = ['50-60%', '60-70%', '70-80%', '80-90%', '90-100%']
+
+        for (low, high), label in zip(bins, bin_labels):
+            mask = (cat_df_no_ties['pred_confidence'] >= low) & (cat_df_no_ties['pred_confidence'] < high)
+            n = mask.sum()
+            if n > 0:
+                expected = (low + high) / 2 * 100
+                actual = cat_df_no_ties.loc[mask, 'correct'].mean() * 100
+                diff = actual - expected
+                if abs(diff) < 10:
+                    cal = "🟢 Good"
+                elif abs(diff) < 20:
+                    cal = "🟡 Fair"
+                else:
+                    cal = "🔴 Poor"
+                report.append(f"| {label} | {expected:.1f}% | {actual:.1f}% | {n} | {cal} |\n")
+            else:
+                report.append(f"| {label} | - | - | 0 | N/A |\n")
+
+        report.append("\n")
+
+    report.append("---\n\n")
+
+    # MATCHUP-LEVEL ANALYSIS (SECONDARY)
+    report.append("## Matchup-Level Analysis (Secondary)\n\n")
     report.append("![Validation Dashboard](validation_dashboard.png)\n\n")
-    report.append("**Dashboard Components:**\n")
-    report.append("1. **Accuracy by Week** - How well did we predict each week?\n")
-    report.append("2. **Overall Accuracy** - Total correct vs incorrect predictions\n")
-    report.append("3. **Calibration** - Do 70% predictions win 70% of the time?\n")
-    report.append("4. **Z-Score Distribution** - Are prediction errors normally distributed?\n")
-    report.append("5. **Accuracy by Confidence** - Do high-confidence picks win more?\n")
-    report.append("6. **Cumulative Accuracy** - How has accuracy evolved?\n")
-    report.append("\n---\n\n")
 
     # Weekly Details
-    report.append("## Weekly Breakdown\n\n")
+    report.append("### Weekly Breakdown\n\n")
     report.append("![Weekly Details](weekly_details.png)\n\n")
 
     # Table of weekly results
-    report.append("### Week-by-Week Summary\n\n")
+    report.append("### Week-by-Week Matchup Summary\n\n")
     report.append("| Week | Matchups | Correct | Accuracy | Avg Confidence |\n")
     report.append("|------|----------|---------|----------|----------------|\n")
 
@@ -1017,80 +1433,6 @@ def generate_markdown_report(all_results: Dict, df: pd.DataFrame, output_dir: Pa
             report.append(f"| {label} | - | - | 0 | N/A |\n")
 
     report.append("\n---\n\n")
-
-    # Category-Level Analysis
-    report.append("## Category-Level Calibration\n\n")
-    report.append("This section analyzes prediction accuracy at the individual category level ")
-    report.append("(11 categories × weeks × matchups).\n\n")
-    report.append("![Category Calibration](category_calibration.png)\n\n")
-
-    if category_df is not None and len(category_df) > 0:
-        cat_df_no_ties = category_df[category_df['correct'].notna()].copy()
-
-        if len(cat_df_no_ties) > 0:
-            # Overall category stats
-            total_cat_pred = len(cat_df_no_ties)
-            total_cat_correct = cat_df_no_ties['correct'].sum()
-            cat_overall_acc = total_cat_correct / total_cat_pred * 100
-
-            report.append(f"### Category-Level Summary\n\n")
-            report.append(f"| Metric | Value |\n")
-            report.append(f"|--------|-------|\n")
-            report.append(f"| **Total Category Predictions** | {total_cat_pred} |\n")
-            report.append(f"| **Correct Predictions** | {int(total_cat_correct)} |\n")
-            report.append(f"| **Overall Category Accuracy** | **{cat_overall_acc:.1f}%** |\n")
-            report.append("\n")
-
-            # Per-category accuracy
-            report.append("### Accuracy by Category\n\n")
-            report.append("| Category | Correct | Total | Accuracy | Assessment |\n")
-            report.append("|----------|---------|-------|----------|------------|\n")
-
-            cat_accuracy = cat_df_no_ties.groupby('category')['correct'].agg(['sum', 'count', 'mean'])
-            cat_accuracy['mean'] *= 100
-
-            for cat in CATEGORIES:
-                if cat in cat_accuracy.index:
-                    row = cat_accuracy.loc[cat]
-                    acc = row['mean']
-                    if acc >= 60:
-                        assessment = "✅ Good"
-                    elif acc >= 50:
-                        assessment = "⚠️ Fair"
-                    else:
-                        assessment = "❌ Poor"
-                    report.append(f"| {cat} | {int(row['sum'])} | {int(row['count'])} | {acc:.1f}% | {assessment} |\n")
-
-            report.append("\n")
-
-            # Category calibration table
-            report.append("### Category Calibration by Confidence\n\n")
-            report.append("| Confidence | Expected | Actual | Count | Calibration |\n")
-            report.append("|------------|----------|--------|-------|-------------|\n")
-
-            bins = [(0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0)]
-            bin_labels = ['50-60%', '60-70%', '70-80%', '80-90%', '90-100%']
-
-            for (low, high), label in zip(bins, bin_labels):
-                mask = (cat_df_no_ties['pred_confidence'] >= low) & (cat_df_no_ties['pred_confidence'] < high)
-                n = mask.sum()
-                if n > 0:
-                    expected = (low + high) / 2 * 100
-                    actual = cat_df_no_ties.loc[mask, 'correct'].mean() * 100
-                    diff = actual - expected
-                    if abs(diff) < 10:
-                        cal = "🟢 Good"
-                    elif abs(diff) < 20:
-                        cal = "🟡 Fair"
-                    else:
-                        cal = "🔴 Poor"
-                    report.append(f"| {label} | {expected:.1f}% | {actual:.1f}% | {n} | {cal} |\n")
-                else:
-                    report.append(f"| {label} | - | - | 0 | N/A |\n")
-
-            report.append("\n")
-
-    report.append("---\n\n")
 
     # Insights and Recommendations
     report.append("## Insights and Recommendations\n\n")
@@ -1252,26 +1594,27 @@ def main():
     print("VALIDATION COMPLETE!")
     print("="*80)
 
-    total_matchups = len(df)
-    total_correct = df['correct'].sum()
-    overall_accuracy = total_correct / total_matchups * 100
-
-    print(f"\n📊 Overall Results:")
-    print(f"   Total Matchups: {total_matchups}")
-    print(f"   Correct Predictions: {total_correct}")
-    print(f"   Overall Accuracy: {overall_accuracy:.1f}%")
-
-    # Category-level summary
+    # Category-level summary FIRST (PRIMARY)
     if category_df is not None and len(category_df) > 0:
         cat_df_no_ties = category_df[category_df['correct'].notna()]
         if len(cat_df_no_ties) > 0:
             cat_correct = cat_df_no_ties['correct'].sum()
             cat_total = len(cat_df_no_ties)
             cat_accuracy = cat_correct / cat_total * 100
-            print(f"\n📊 Category-Level Results:")
+            print(f"\n📊 PRIMARY METRIC - Category-Level Accuracy:")
             print(f"   Total Category Predictions: {cat_total}")
             print(f"   Correct Predictions: {int(cat_correct)}")
-            print(f"   Category Accuracy: {cat_accuracy:.1f}%")
+            print(f"   ⭐ CATEGORY ACCURACY: {cat_accuracy:.1f}%")
+
+    # Matchup-level summary (secondary)
+    total_matchups = len(df)
+    total_correct = df['correct'].sum()
+    overall_accuracy = total_correct / total_matchups * 100
+
+    print(f"\n📊 Secondary Metric - Matchup-Level Accuracy:")
+    print(f"   Total Matchups: {total_matchups}")
+    print(f"   Correct Predictions: {total_correct}")
+    print(f"   Matchup Accuracy: {overall_accuracy:.1f}%")
 
     print(f"\n📁 Output Directory: {output_dir}/")
     print(f"\n📈 Generated Files:")
